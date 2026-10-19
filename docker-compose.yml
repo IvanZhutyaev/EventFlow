@@ -1,0 +1,111 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eventflow
+      POSTGRES_PASSWORD: eventflow
+      POSTGRES_DB: eventflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventflow"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["/app/migrate"]
+    environment: &appenv
+      APP_ENV: development
+      DATABASE_URL: postgres://eventflow:eventflow@postgres:5432/eventflow?sslmode=disable
+      NATS_URL: nats://nats:4222
+      WEBHOOK_SECRET: dev-secret-change-me
+      ADMIN_TOKEN: dev-admin-token
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  eventflow-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["/app/api"]
+    environment: *appenv
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  eventflow-worker:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["/app/worker"]
+    environment: *appenv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Deterministic webhook sink for e2e tests (spec §28):
+  # /hook 200 (verifies HMAC signature), /fail-once 500 then 200,
+  # /always-fail 500, /status/:code.
+  testsink:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    entrypoint: ["/app/testsink"]
+    environment:
+      WEBHOOK_SECRET: dev-secret-change-me
+    ports:
+      - "9091:8081"
+
+  # Integration test runner: Go toolchain inside the compose network, so tests
+  # reach postgres/nats via service names (spec §28).
+  test-runner:
+    image: golang:1.27-alpine
+    working_dir: /src
+    volumes:
+      - .:/src
+    environment:
+      TEST_DATABASE_URL: postgres://eventflow:eventflow@postgres:5432/eventflow?sslmode=disable
+      TEST_NATS_URL: nats://nats:4222
+      INTEGRATION: "1"
+      GOFLAGS: -mod=mod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "go test -count=1 -tags=integration ./tests/integration/..."]
+
+volumes:
+  pgdata:
+  natsdata:
