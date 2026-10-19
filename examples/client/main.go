@@ -65,9 +65,20 @@ func main() {
 		if err != nil {
 			fatal("request "+path, err)
 		}
-		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if err != nil {
+			fatal("request "+path+" read body", err)
+		}
+		if closeErr != nil {
+			fatal("request "+path+" close body", closeErr)
+		}
 		var out map[string]any
-		json.NewDecoder(resp.Body).Decode(&out)
+		if len(body) > 0 {
+			if err := json.Unmarshal(body, &out); err != nil {
+				fatal("request "+path+" decode body", err)
+			}
+		}
 		return resp.StatusCode, out
 	}
 
@@ -117,7 +128,7 @@ func doJSON(req *http.Request, out any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("status %d: %s", resp.StatusCode, b)

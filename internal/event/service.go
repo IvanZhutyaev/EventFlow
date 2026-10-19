@@ -78,7 +78,7 @@ func (s *Service) Ingest(ctx context.Context, projectID uuid.UUID, req *CreateRe
 	if err != nil {
 		return nil, fmt.Errorf("event: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	err = txQueryRow(ctx, tx, `
 		INSERT INTO events (id, project_id, event_type, source, subject, idempotency_key, payload)

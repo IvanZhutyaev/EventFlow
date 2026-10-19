@@ -38,6 +38,15 @@ func main() {
 	var mu sync.Mutex
 	failOnceSeen := map[string]bool{}
 
+	// respond writes a JSON body; write errors mean the client went away,
+	// nothing more to do with them.
+	respond := func(w http.ResponseWriter, body string) {
+		_, _ = fmt.Fprintln(w, body)
+	}
+	respondf := func(w http.ResponseWriter, format string, a ...any) {
+		_, _ = fmt.Fprintf(w, format, a...)
+	}
+
 	// verify checks the EventFlow HMAC signature when a secret is configured.
 	verify := func(w http.ResponseWriter, r *http.Request, body []byte) bool {
 		if secret == "" {
@@ -49,7 +58,7 @@ func main() {
 		want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 		if !hmac.Equal([]byte(want), []byte(got)) {
 			w.WriteHeader(http.StatusUnauthorized)
-			fmt.Fprintf(w, `{"error":"invalid signature","want":%q,"got":%q}`, want, got)
+			respondf(w, `{"error":"invalid signature","want":%q,"got":%q}`, want, got)
 			return false
 		}
 		return true
@@ -64,7 +73,7 @@ func main() {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"ok":true}`)
+		respond(w, `{"ok":true}`)
 	})
 
 	// /fail-once returns 500 on the first request *per delivery*, 200 (signed) afterwards.
@@ -77,20 +86,20 @@ func main() {
 		mu.Unlock()
 		if !seen {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintln(w, `{"error":"temporary failure"}`)
+			respond(w, `{"error":"temporary failure"}`)
 			return
 		}
 		if !verify(w, r, body) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"ok":true}`)
+		respond(w, `{"ok":true}`)
 	})
 
 	// /always-fail always returns 500 — drives deliveries to dead letter.
 	mux.HandleFunc("/always-fail", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintln(w, `{"error":"permanent failure"}`)
+		respond(w, `{"error":"permanent failure"}`)
 	})
 
 	// /status/:code returns an arbitrary status code.
@@ -100,7 +109,7 @@ func main() {
 			code = http.StatusOK
 		}
 		w.WriteHeader(code)
-		fmt.Fprintf(w, `{"status":%d}`, code)
+		respondf(w, `{"status":%d}`, code)
 	})
 
 	log.Printf("testsink listening on %s (signature verification: %v)", addr, secret != "")

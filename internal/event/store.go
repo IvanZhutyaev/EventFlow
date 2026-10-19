@@ -89,7 +89,7 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, page, limit int) 
 	if err != nil {
 		return nil, 0, fmt.Errorf("event: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Event
 	for rows.Next() {

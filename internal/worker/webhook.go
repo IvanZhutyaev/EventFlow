@@ -120,12 +120,35 @@ func (w *WebhookWorker) consumeLoop(ctx context.Context, jobs <-chan jetstream.M
 	}
 }
 
+// ack acknowledges a message, logging (but not propagating) ack errors:
+// by the time we ack, the delivery result is already persisted.
+func (w *WebhookWorker) ack(msg jetstream.Msg, deliveryID any) {
+	if err := msg.Ack(); err != nil {
+		w.log.Error("nats ack failed", "delivery_id", deliveryID, "error", err)
+	}
+}
+
+// nak negatively acknowledges a message for redelivery, logging nak errors.
+func (w *WebhookWorker) nak(msg jetstream.Msg, deliveryID any) {
+	if err := msg.Nak(); err != nil {
+		w.log.Error("nats nak failed", "delivery_id", deliveryID, "error", err)
+	}
+}
+
+// nakDelay negatively acknowledges a message with a redelivery delay,
+// logging errors.
+func (w *WebhookWorker) nakDelay(msg jetstream.Msg, deliveryID any, delay time.Duration) {
+	if err := msg.NakWithDelay(delay); err != nil {
+		w.log.Error("nats nak with delay failed", "delivery_id", deliveryID, "delay", delay.String(), "error", err)
+	}
+}
+
 // handle processes a single delivery job end to end.
 func (w *WebhookWorker) handle(ctx context.Context, msg jetstream.Msg) {
 	var job broker.DeliveryJob
 	if err := json.Unmarshal(msg.Data(), &job); err != nil {
 		w.log.Error("invalid job payload, discarding", "error", err)
-		msg.Ack()
+		w.ack(msg, nil)
 		return
 	}
 
@@ -134,18 +157,18 @@ func (w *WebhookWorker) handle(ctx context.Context, msg jetstream.Msg) {
 		if errors.Is(err, delivery.ErrNotFound) {
 			// Delivery row gone (e.g. project deleted) — nothing to do.
 			w.log.Warn("delivery not found, discarding", "delivery_id", job.DeliveryID)
-			msg.Ack()
+			w.ack(msg, job.DeliveryID)
 			return
 		}
 		// Transient DB error: nak so JetStream redelivers later.
 		w.log.Error("load delivery failed", "delivery_id", job.DeliveryID, "error", err)
-		msg.Nak()
+		w.nak(msg, job.DeliveryID)
 		return
 	}
 
 	// Idempotency: a message redelivered after success must not re-send (§11).
 	if rel.Delivery.Status == delivery.StatusDelivered || rel.Delivery.Status == delivery.StatusDeadLetter {
-		msg.Ack()
+		w.ack(msg, rel.Delivery.ID)
 		return
 	}
 
@@ -153,7 +176,7 @@ func (w *WebhookWorker) handle(ctx context.Context, msg jetstream.Msg) {
 	// nak with delay so JetStream redelivers later.
 	if rel.Delivery.Status == delivery.StatusRetrying && rel.Delivery.NextAttemptAt != nil {
 		if wait := time.Until(*rel.Delivery.NextAttemptAt); wait > 0 {
-			msg.NakWithDelay(wait)
+			w.nakDelay(msg, rel.Delivery.ID, wait)
 			return
 		}
 	}
@@ -200,17 +223,17 @@ func (w *WebhookWorker) handle(ctx context.Context, msg jetstream.Msg) {
 	}
 	if err := w.deliveries.RecordAttempt(ctx, attempt); err != nil {
 		w.log.Error("record attempt failed", "delivery_id", rel.Delivery.ID, "error", err)
-		msg.Nak()
+		w.nak(msg, rel.Delivery.ID)
 		return
 	}
 
 	if status == delivery.AttemptSuccess {
 		if err := w.deliveries.MarkDelivered(ctx, rel.Delivery.ID, attemptNumber); err != nil {
 			w.log.Error("mark delivered failed", "delivery_id", rel.Delivery.ID, "error", err)
-			msg.Nak()
+			w.nak(msg, rel.Delivery.ID)
 			return
 		}
-		msg.Ack()
+		w.ack(msg, rel.Delivery.ID)
 		return
 	}
 
@@ -219,12 +242,12 @@ func (w *WebhookWorker) handle(ctx context.Context, msg jetstream.Msg) {
 		next := time.Now().Add(delay)
 		if err := w.deliveries.MarkRetrying(ctx, rel.Delivery.ID, attemptNumber, next); err != nil {
 			w.log.Error("mark retrying failed", "delivery_id", rel.Delivery.ID, "error", err)
-			msg.Nak()
+			w.nak(msg, rel.Delivery.ID)
 			return
 		}
 		w.log.Info("delivery scheduled for retry",
 			"delivery_id", rel.Delivery.ID, "attempt", attemptNumber, "delay", delay.String())
-		msg.NakWithDelay(delay)
+		w.nakDelay(msg, rel.Delivery.ID, delay)
 		return
 	}
 
@@ -239,12 +262,12 @@ func (w *WebhookWorker) handle(ctx context.Context, msg jetstream.Msg) {
 	}
 	if err := w.deliveries.MarkDeadLetter(ctx, rel.Delivery.ID, attemptNumber, reason, lastError); err != nil {
 		w.log.Error("mark dead letter failed", "delivery_id", rel.Delivery.ID, "error", err)
-		msg.Nak()
+		w.nak(msg, rel.Delivery.ID)
 		return
 	}
 	w.log.Warn("delivery moved to dead letter",
 		"delivery_id", rel.Delivery.ID, "reason", reason, "attempts", attemptNumber)
-	msg.Ack()
+	w.ack(msg, rel.Delivery.ID)
 }
 
 // send performs the signed webhook POST and returns the HTTP status
@@ -279,6 +302,6 @@ func (w *WebhookWorker) send(ctx context.Context, rel *delivery.DeliveryWithRela
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode, nil
 }

@@ -38,7 +38,7 @@ func run(logger *slog.Logger, dryRun bool) error {
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if err := db.Ping(); err != nil {
 		return fmt.Errorf("ping db: %w", err)
@@ -88,11 +88,11 @@ func run(logger *slog.Logger, dryRun bool) error {
 		}
 
 		if _, err := tx.Exec(string(body)); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("apply %s: %w", name, err)
 		}
 		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES ($1)`, name); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("record %s: %w", name, err)
 		}
 		if err := tx.Commit(); err != nil {

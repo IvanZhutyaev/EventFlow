@@ -124,7 +124,8 @@ func (b *Broker) Healthy() bool {
 // Close drains and closes the NATS connection (graceful shutdown, spec §30).
 func (b *Broker) Close() {
 	if b.nc != nil {
-		b.nc.Drain()
+		// Drain errors are expected during shutdown; nothing to do with them.
+		_ = b.nc.Drain()
 		b.nc.Close()
 	}
 }

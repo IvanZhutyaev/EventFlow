@@ -70,7 +70,7 @@ func (s *Store) List(ctx context.Context, projectID uuid.UUID, page, limit int) 
 	if err != nil {
 		return nil, 0, fmt.Errorf("subscription: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Subscription
 	for rows.Next() {
@@ -98,7 +98,7 @@ func (s *Store) ListEnabledByProject(ctx context.Context, projectID uuid.UUID) (
 	if err != nil {
 		return nil, fmt.Errorf("subscription: list enabled: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Subscription
 	for rows.Next() {

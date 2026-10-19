@@ -112,7 +112,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Delivery, int, error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("delivery: list: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Delivery
 	for rows.Next() {
@@ -151,7 +151,7 @@ func (s *Store) ListAttempts(ctx context.Context, deliveryID uuid.UUID) ([]Attem
 	if err != nil {
 		return nil, fmt.Errorf("delivery: list attempts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []Attempt
 	for rows.Next() {
@@ -202,7 +202,7 @@ func (s *Store) MarkDeadLetter(ctx context.Context, id uuid.UUID, attempts int, 
 	if err != nil {
 		return fmt.Errorf("delivery: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.ExecContext(ctx, `
 		UPDATE deliveries
